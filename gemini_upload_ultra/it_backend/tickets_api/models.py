@@ -1,3 +1,14 @@
+"""
+数据模型定义（Django ORM Models）。
+
+本文件描述系统核心数据结构：
+- CustomUser：扩展 Django 用户，增加角色、学号/工号、手机号、头像等字段
+- Ticket：报修工单全流程数据（提交/审核/派单/维修/评价/AI 过审标记）
+- TicketAttachment：工单附件（图片/视频）
+- AiSetting / AiChatLog：AI 配置与聊天记录（用于后台可视化与审计）
+- StudentProfile / MaintenanceProfile / AuditorProfile / AdminProfile：按角色拆分的扩展信息
+"""
+
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 
@@ -10,6 +21,15 @@ def _user_avatar_upload_to(instance, filename):
 
 
 class CustomUser(AbstractUser):
+    """
+    自定义用户模型。
+
+    设计要点：
+    - role：决定用户身份（学生/维修/审核/管理员），影响前端跳转与后端权限
+    - identity_id：学号/工号，绑定后用于业务侧唯一识别
+    - phone：手机号（用于找回密码；管理员账号不走该流程）
+    - avatar/avatar_url：头像展示（支持上传文件或外链）
+    """
     IDENTITY_CHOICES = (
         ('student', '学生'),
         ('maintenance', '维修人员'),
@@ -27,6 +47,7 @@ class CustomUser(AbstractUser):
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, default='unknown', verbose_name="性别")
     avatar_url = models.URLField(blank=True, default='', verbose_name="头像地址")
     avatar = models.FileField(upload_to=_user_avatar_upload_to, blank=True, null=True, verbose_name="头像文件")
+    phone = models.CharField(max_length=20, blank=True, default='', verbose_name="手机号")
     role = models.CharField(max_length=20, choices=IDENTITY_CHOICES, default='student', verbose_name="身份角色")
     identity_id = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="身份ID")
     is_identity_bound = models.BooleanField(default=False, verbose_name="是否已绑定")
@@ -49,6 +70,14 @@ class CustomUser(AbstractUser):
 
 
 class Ticket(models.Model):
+    """
+    报修工单模型（系统核心业务对象）。
+
+    关键字段：
+    - status：工单状态机（pending_dorm -> pending_dispatch -> pending_repair -> repairing -> finished -> closed / rejected）
+    - submitter/assignee/auditor：工单的提交人/维修人/审核人
+    - ai_auto_approved/ai_auto_checked_at/...：AI 自动审核产物（用于“AI 过审标记 + 人工兜底”）
+    """
     CATEGORY_CHOICES = [
         ('设备故障', '设备故障'),
         ('水电问题', '水电问题'),

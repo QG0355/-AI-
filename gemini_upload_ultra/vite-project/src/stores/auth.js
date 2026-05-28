@@ -1,3 +1,11 @@
+/**
+ * 文件：src/stores/auth.js
+ * 类型：状态管理
+ * 说明：
+ * - 该文件为前端业务模块，实现状态/路由/配置/工具函数等
+ * - 涉及接口：login/、me/
+ */
+
 // src/stores/auth.js
 import { defineStore } from 'pinia'
 import axios from 'axios'

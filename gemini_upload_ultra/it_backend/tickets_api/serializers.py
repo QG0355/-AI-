@@ -1,15 +1,28 @@
+"""
+序列化器定义（DRF Serializers）。
+
+作用：
+- 将 Django ORM 模型对象序列化为 JSON，供前端展示
+- 将前端提交的数据反序列化并校验（如注册、提交工单等）
+
+本文件关键点：
+- UserSerializer：返回前端需要的用户信息（含头像、手机号、维修/审核联系电话等）
+- TicketSerializer：工单详情序列化（含提交人/维修人/审核人信息、附件列表）
+"""
+
 from rest_framework import serializers
 from .models import CustomUser, Ticket, TicketAttachment, ServiceStar
 
 
 class UserSerializer(serializers.ModelSerializer):
+    """用户信息序列化：为个人主页、身份校验、各端页面提供统一用户 JSON。"""
     avatar = serializers.SerializerMethodField()
     maintenance_info = serializers.SerializerMethodField()
     contact_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'name', 'gender', 'avatar', 'role', 'identity_id', 'is_identity_bound', 'maintenance_info', 'contact_phone']
+        fields = ['id', 'username', 'name', 'gender', 'avatar', 'role', 'identity_id', 'is_identity_bound', 'phone', 'maintenance_info', 'contact_phone']
 
     def get_avatar(self, obj):
         request = self.context.get('request')
@@ -31,11 +44,11 @@ class UserSerializer(serializers.ModelSerializer):
             return obj.maintenance_profile.contact_phone
         if obj.role == 'auditor' and hasattr(obj, 'auditor_profile'):
             return getattr(obj.auditor_profile, 'contact_phone', '')
-        return ''
+        return getattr(obj, 'phone', '') or ''
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    # 1. 删除了所有的 required=True，变成可选
+    """注册序列化：只创建基础账号，不做身份绑定（身份绑定在 /bind 页面完成）。"""
 
     class Meta:
         model = CustomUser
@@ -57,6 +70,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class TicketSerializer(serializers.ModelSerializer):
+    """工单序列化：用于列表/详情展示，并补充关联用户信息与附件信息。"""
     submitter_name = serializers.SerializerMethodField()
     submitter_identity_id = serializers.SerializerMethodField()
     assignee_name = serializers.SerializerMethodField()

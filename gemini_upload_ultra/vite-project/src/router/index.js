@@ -1,9 +1,18 @@
+/**
+ * 文件：src/router/index.js
+ * 类型：路由配置
+ * 说明：
+ * - 该文件为前端业务模块，实现状态/路由/配置/工具函数等
+ * - 涉及接口：无
+ */
+
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const routes = [
   { path: '/login', component: () => import('@/views/LoginPage.vue') },
   { path: '/register', component: () => import('@/views/RegisterPage.vue') },
+  { path: '/forgot-password', component: () => import('@/views/ForgotPassword.vue') },
   { path: '/bind', component: () => import('@/views/IdentityBind.vue') },
   
   { 
@@ -30,7 +39,7 @@ const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
-  const publicPages = ['/login', '/register'] // 允许未登录访问的页面
+  const publicPages = ['/login', '/register', '/forgot-password'] // 允许未登录访问的页面
 
   if (publicPages.includes(to.path) && authStore.isLoggedIn) {
     return next('/')

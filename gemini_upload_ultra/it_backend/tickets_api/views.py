@@ -1,3 +1,18 @@
+"""
+后端接口实现（Django REST Framework Views）。
+
+本文件是后端业务逻辑的“总入口”，包含：
+- 登录/注册/当前用户信息（/api/login/、/api/register/、/api/me/）
+- 身份绑定（/api/bind-identity/）：学号/工号绑定、角色确定、手机号绑定策略等
+- 忘记密码（/api/forgot-password/）：通过 学号/工号 + 手机号 校验后重置
+- 工单 Ticket 的全流程接口（提交、查询、审核、派单、维修、评价、附件等）
+- AI 助手接口与 AI 配置读取
+
+权限总体规则（简化说明）：
+- Token 登录后通过 Authorization: Token <token> 访问受保护接口
+- admin/auditor 具备更高权限（可看全量工单/配置等）
+"""
+
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
@@ -29,6 +44,17 @@ from .simple_sync import sync_user as sync_user_simple, sync_ticket as sync_tick
 @api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def get_current_user(request):
+    """
+    获取/更新当前登录用户信息。
+
+    GET：
+    - 返回 UserSerializer 序列化后的用户信息（个人主页展示）
+
+    PATCH：
+    - 支持更新 name/gender/phone
+    - maintenance/auditor 角色会同步更新对应 Profile 的联系电话字段
+    - 管理员账号不需要手机号，后端会拒绝更新 phone
+    """
     user = request.user
     if request.method == 'PATCH':
         updates = {}
@@ -43,6 +69,20 @@ def get_current_user(request):
             if gender not in {'unknown', 'male', 'female'}:
                 return Response({"detail": "性别不合法"}, status=status.HTTP_400_BAD_REQUEST)
             updates['gender'] = gender
+
+        if 'phone' in request.data:
+            if getattr(user, 'role', None) == 'admin' or getattr(user, 'is_superuser', False):
+                return Response({"detail": "管理员账号不需要绑定手机号"}, status=status.HTTP_400_BAD_REQUEST)
+            phone = (request.data.get('phone') or '').strip()
+            if not phone:
+                return Response({"detail": "手机号不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+            if not re.fullmatch(r'\d{6,20}', phone):
+                return Response({"detail": "手机号格式不正确"}, status=status.HTTP_400_BAD_REQUEST)
+            updates['phone'] = phone
+            if getattr(user, 'role', None) == 'maintenance':
+                profile_updates['contact_phone'] = phone
+            if getattr(user, 'role', None) == 'auditor':
+                profile_updates['auditor_contact_phone'] = phone
 
         if getattr(user, 'role', None) == 'maintenance':
             if 'department' in request.data:
@@ -98,6 +138,7 @@ def get_current_user(request):
 
 # 1. Login View
 class CustomAuthToken(ObtainAuthToken):
+    """用户名密码登录：返回 Token + 当前用户信息。"""
     def post(self, request, *args, **kwargs):
         serializer = self.serializer_class(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -108,14 +149,84 @@ class CustomAuthToken(ObtainAuthToken):
 
 # 2. Register View
 class RegisterView(generics.CreateAPIView):
+    """
+    注册接口：只创建基础账号。
+
+    设计理由：
+    - 注册后账号默认 role=student，但 is_identity_bound=False
+    - 用户需要到 /bind 页面完成实名信息（学号/工号、角色、姓名）
+    """
     queryset = CustomUser.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def forgot_password(request):
+    """
+    忘记密码（重置密码）。
+
+    校验规则：
+    - 仅允许普通账号（学生/维修/审核），管理员/超级管理员不支持找回密码
+    - 必须已绑定身份（is_identity_bound=True）
+    - 必须同时校验 identity_id（学号/工号）与 phone（手机号）都匹配
+    - 重置后删除旧 Token，强制重新登录
+    """
+    username = (request.data.get('username') or '').strip()
+    identity_id = (request.data.get('identity_id') or '').strip()
+    phone = (request.data.get('phone') or '').strip()
+    new_password = (request.data.get('new_password') or '').strip()
+
+    if not username:
+        return Response({'detail': '账号不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    if not identity_id:
+        return Response({'detail': '学号/工号不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    if not new_password:
+        return Response({'detail': '新密码不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(new_password) < 6:
+        return Response({'detail': '新密码长度至少 6 位'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = CustomUser.objects.get(username=username)
+    except CustomUser.DoesNotExist:
+        return Response({'detail': '账号不存在'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if getattr(user, 'role', None) == 'admin' or getattr(user, 'is_superuser', False):
+        return Response({'detail': '管理员账号不支持找回密码'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not phone:
+        return Response({'detail': '手机号不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+    if not re.fullmatch(r'\d{6,20}', phone):
+        return Response({'detail': '手机号格式不正确'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not getattr(user, 'is_identity_bound', False):
+        return Response({'detail': '该账号尚未绑定学号/工号，无法重置密码'}, status=status.HTTP_400_BAD_REQUEST)
+    if (getattr(user, 'identity_id', None) or '').strip() != identity_id:
+        return Response({'detail': '学号/工号不匹配'}, status=status.HTTP_400_BAD_REQUEST)
+    if not (getattr(user, 'phone', '') or '').strip():
+        return Response({'detail': '该账号尚未绑定手机号，无法重置密码'}, status=status.HTTP_400_BAD_REQUEST)
+    if (getattr(user, 'phone', '') or '').strip() != phone:
+        return Response({'detail': '手机号不匹配'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save(update_fields=['password'])
+    Token.objects.filter(user=user).delete()
+    return Response({'detail': '密码已重置，请重新登录'})
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_maintenance_users(request):
+    """
+    获取可派单的维修人员列表（给审核员/管理员派单页面用）。
+
+    权限：
+    - 仅 admin/auditor 可访问
+
+    返回：
+    - 只返回“部门/工种 + 联系电话”都已完善的维修人员
+    """
     user = request.user
     if user.role not in ['admin', 'auditor']:
         return Response({'detail': '无权限查看维修人员列表'}, status=status.HTTP_403_FORBIDDEN)
@@ -140,26 +251,54 @@ def get_maintenance_users(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def bind_identity(request):
+    """
+    身份绑定接口（实名信息补全）。
+
+    绑定内容：
+    - role：student/maintenance/auditor（不允许通过该接口绑定 admin，防止提权）
+    - identity_id：学号/工号（全局唯一）
+    - name：真实姓名
+
+    手机号策略（前端统一在个人主页绑定）：
+    - 首次绑定身份时 phone 可不填
+    - 绑定后如提交 phone，则可用于更新手机号（并同步到维修/审核的 Profile）
+    """
     user = request.user
+    existed_phone = (getattr(user, 'phone', '') or '').strip()
+    phone = (request.data.get('phone') or '').strip()
     if user.is_identity_bound:
+        if phone:
+            if not re.fullmatch(r'\d{6,20}', phone):
+                return Response({"detail": "手机号格式不正确"}, status=status.HTTP_400_BAD_REQUEST)
+            if existed_phone != phone:
+                user.phone = phone
+                user.save(update_fields=['phone'])
+                if getattr(user, 'role', None) == 'maintenance':
+                    MaintenanceProfile.objects.update_or_create(user=user, defaults={'worker_id': user.identity_id or str(user.pk), 'contact_phone': phone})
+                if getattr(user, 'role', None) == 'auditor':
+                    AuditorProfile.objects.update_or_create(user=user, defaults={'auditor_id': user.identity_id or str(user.pk), 'contact_phone': phone})
+                return Response({"detail": "手机号已更新", "user": UserSerializer(user, context={'request': request}).data}, status=200)
         return Response({"detail": "您已经绑定过身份，无需重复操作", "user": UserSerializer(user, context={'request': request}).data}, status=200)
 
     role = (request.data.get('role') or '').strip()
     identity_id = (request.data.get('identity_id') or '').strip()
     name = (request.data.get('name') or '').strip()
 
-    if role not in {'student', 'maintenance', 'auditor', 'admin'}:
+    if role not in {'student', 'maintenance', 'auditor'}:
         return Response({"detail": "角色不合法"}, status=status.HTTP_400_BAD_REQUEST)
     if not identity_id:
         return Response({"detail": "工号/学号不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+    if phone and not re.fullmatch(r'\d{6,20}', phone):
+        return Response({"detail": "手机号格式不正确"}, status=status.HTTP_400_BAD_REQUEST)
     if CustomUser.objects.filter(identity_id=identity_id).exclude(pk=user.pk).exists():
         return Response({"detail": "该工号/学号已被绑定，请确认后重试"}, status=status.HTTP_400_BAD_REQUEST)
 
     user.role = role
     user.identity_id = identity_id
     user.name = name
+    user.phone = phone
     user.is_identity_bound = True
-    if role in {'admin', 'auditor'}:
+    if role in {'auditor'}:
         user.is_staff = True
     else:
         user.is_staff = False
@@ -171,24 +310,35 @@ def bind_identity(request):
     if role == 'student':
         StudentProfile.objects.update_or_create(user=user, defaults={'student_id': identity_id})
     elif role == 'maintenance':
-        MaintenanceProfile.objects.update_or_create(user=user, defaults={'worker_id': identity_id})
+        defaults = {'worker_id': identity_id}
+        if phone:
+            defaults['contact_phone'] = phone
+        MaintenanceProfile.objects.update_or_create(user=user, defaults=defaults)
     elif role == 'auditor':
-        AuditorProfile.objects.update_or_create(user=user, defaults={'auditor_id': identity_id})
-    elif role == 'admin':
-        AdminProfile.objects.update_or_create(user=user, defaults={'admin_id': identity_id})
+        defaults = {'auditor_id': identity_id}
+        if phone:
+            defaults['contact_phone'] = phone
+        AuditorProfile.objects.update_or_create(user=user, defaults=defaults)
 
     try:
         sync_user_simple(user)
     except Exception:
         pass
 
-    return Response({"detail": "Bind successful", "user": UserSerializer(user, context={'request': request}).data})
+    return Response({"detail": "绑定成功", "user": UserSerializer(user, context={'request': request}).data})
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def upload_my_avatar(request):
+    """
+    上传当前用户头像（本地文件上传）。
+
+    约束：
+    - 仅允许图片类型（JPG/PNG/WEBP/GIF）
+    - 最大 5MB
+    """
     user = request.user
     f = request.FILES.get('file') or request.FILES.get('avatar')
     if not f:
@@ -218,6 +368,13 @@ def upload_my_avatar(request):
 
 # 4. Ticket ViewSet
 class TicketViewSet(viewsets.ModelViewSet):
+    """
+    工单视图集（Ticket CRUD + 自定义动作）。
+
+    用法：
+    - list/retrieve/create/update/destroy：DRF 标准接口
+    - 额外 action：审核（review）、派单、接单、维修完成、评价、导出报修单等
+    """
     serializer_class = TicketSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter]
@@ -566,6 +723,10 @@ class TicketViewSet(viewsets.ModelViewSet):
                 return Response({'detail': '请先在工作台填写并保存审核员联系电话后再审核'}, status=status.HTTP_400_BAD_REQUEST)
 
         decision = request.data.get('decision')
+        if ticket.status not in ['pending_dorm', 'pending_dispatch']:
+            return Response({'detail': '当前状态不可审核/驳回'}, status=status.HTTP_400_BAD_REQUEST)
+        if ticket.assignee_id:
+            return Response({'detail': '已派单的工单不可驳回，如需处理请走退回/撤销流程'}, status=status.HTTP_400_BAD_REQUEST)
         if decision == 'approve':
             ticket.status = 'pending_dispatch'
             ticket.rejected_reason = None

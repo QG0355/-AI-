@@ -1,3 +1,12 @@
+<!--
+文件：src/views/Workplace.vue
+类型：页面组件
+说明：
+- 该文件为前端业务模块，实现页面渲染、交互与接口调用
+- 主要逻辑在 <script setup> 中（状态、事件、请求、路由跳转等）
+涉及接口：maintenance-users/、me/、tickets/
+-->
+
 <template>
   <div class="workspace-container">
     <div class="page-header">
@@ -55,6 +64,7 @@
               </option>
             </select>
             <button @click="dispatchTicket(t.id)" class="btn-dispatch">派单</button>
+            <button @click="rejectTicket(t.id)" class="btn-reject">驳回</button>
           </div>
         </div>
       </div>
@@ -437,6 +447,22 @@ async function returnTicket(ticketId) {
   }
 }
 
+async function rejectTicket(ticketId) {
+  const input = prompt('请输入驳回原因')
+  if (input === null) return
+  const reason = (input || '').trim()
+  try {
+    await axios.post(apiUrl(`tickets/${ticketId}/review/`), {
+      decision: 'reject',
+      reason,
+    }, { headers: { Authorization: `Token ${auth.token}` } })
+    await fetchData()
+    alert('已驳回')
+  } catch (e) {
+    alert(e.response?.data?.detail || '驳回失败')
+  }
+}
+
 function openFinishModal(id) {
   finishModal.value = { open: true, ticketId: id, repair_result: '', materials_used: '', files: [] }
 }
@@ -569,6 +595,8 @@ h4 { margin: 0 0 10px 0; font-size: 16px; color: #333; }
 .btn-start { margin-top: 15px; width: 100%; padding: 10px; background: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
 .btn-return { margin-top: 15px; width: 100%; padding: 10px; background: #e74c3c; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
 .btn-sheet { margin-top: 12px; width: 100%; padding: 10px; background: #111827; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 800; }
+.btn-dispatch { padding: 10px 14px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 900; }
+.btn-reject { padding: 10px 14px; background: #b91c1c; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 900; }
 
 .action-row { display: flex; gap: 10px; }
 
