@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: food_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: '<REDACTED>'
+      MYSQL_DATABASE: food_nutrition
+      MYSQL_CHARSET: utf8mb4
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: food_backend
+    restart: always
+    ports:
+      - '5000:5000'
+    volumes:
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      - mysql
+    environment:
+      SQLALCHEMY_DATABASE_URI: 'mysql+pymysql://root:<REDACTED>@mysql:3306/food_nutrition?charset=utf8mb4'
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: food_frontend
+    restart: always
+    ports:
+      - '80:80'
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+
